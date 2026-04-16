@@ -1,6 +1,8 @@
 import React, { useState, useRef } from 'react';
 import imageCompression from 'browser-image-compression';
-import { Camera, MapPin, CloudSun, Send, Trash2, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { Camera, MapPin, CloudSun, Send, Trash2, Image as ImageIcon, Loader2, FileJson, FileText } from 'lucide-react';
+// @ts-expect-error - html2pdf doesn't always have perfect types
+import html2pdf from 'html2pdf.js';
 
 interface MediaFile {
   id: string;
@@ -175,7 +177,42 @@ function App() {
     e.preventDefault();
     console.log('Odosielam dáta:', formData);
     console.log('Médiá:', mediaFiles);
-    alert('Dáta boli uložené (simulácia).');
+    alert('Dáta boli uložené (simulácia). Na stiahnutie použite tlačidlá nižšie.');
+  };
+
+  const handleExportJSON = () => {
+    const dataToExport = {
+      ...formData,
+      multimedia: mediaFiles.map(m => ({ id: m.id, name: m.file.name, type: m.type }))
+    };
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dataToExport, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href",     dataStr);
+    downloadAnchorNode.setAttribute("download", `dennik-${formData.dennikCislo.replace('/', '_') || 'novy'}.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const handleExportPDF = () => {
+    const element = document.getElementById('pdf-export-container');
+    if (!element) return;
+
+    // Temporarily show the element for rendering
+    element.style.display = 'block';
+
+    const opt = {
+      margin:       10,
+      filename:     `dennik-${formData.dennikCislo.replace('/', '_') || 'novy'}.pdf`,
+      image:        { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas:  { scale: 2, useCORS: true },
+      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
+    };
+
+    html2pdf().set(opt).from(element).save().then(() => {
+       // Hide it again
+       element.style.display = 'none';
+    });
   };
 
   return (
@@ -375,15 +412,109 @@ function App() {
           </section>
 
           {/* Akcie */}
-          <div className="pt-6 pb-2">
-            <button type="submit" className="w-full flex items-center justify-center gap-2 bg-blue-800 hover:bg-blue-900 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md">
+          <div className="pt-6 pb-2 grid grid-cols-1 md:grid-cols-3 gap-4 border-t mt-4">
+            <button type="submit" className="w-full flex items-center justify-center gap-2 bg-blue-800 hover:bg-blue-900 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
               <Send className="w-5 h-5" />
-              Uložiť denník
+              Uložiť dáta
+            </button>
+            <button type="button" onClick={handleExportJSON} className="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
+              <FileJson className="w-5 h-5" />
+              Stiahnuť JSON
+            </button>
+            <button type="button" onClick={handleExportPDF} className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
+              <FileText className="w-5 h-5" />
+              Stiahnuť PDF
             </button>
           </div>
 
         </form>
       </div>
+
+      {/* Hidden PDF Template */}
+      <div id="pdf-export-container" style={{ display: 'none', padding: '20px', fontFamily: 'sans-serif', color: '#000', background: '#fff' }}>
+        <div style={{ textAlign: 'center', borderBottom: '2px solid #ccc', paddingBottom: '10px', marginBottom: '20px' }}>
+          <h1 style={{ fontSize: '24px', margin: '0 0 5px 0' }}>SLOVENSKÁ SPELEOLOGICKÁ SPOLOČNOSŤ</h1>
+          <h2 style={{ fontSize: '18px', margin: '0' }}>Technický denník č.: {formData.dennikCislo}</h2>
+        </div>
+
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
+          <tbody>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold', width: '30%' }}>Lokalita:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.lokalita}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Poloha lokality (GPS):</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.poloha}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Krasové územie:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.krasoveUzemie}</td>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Orografický celok:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.orografickyCelok}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Dátum:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.datum}</td>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Pracovná doba:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.pracovnaDoba}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Počasie:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.pocasie}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Vedúci akcie:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.veduciAkcie}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Ostatní členovia SSS:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.ostatniClenovia}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Iní účastníci:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.iniUcastnici}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }} colSpan={4}>Popis práce (prípadný nákres):</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', height: '100px', verticalAlign: 'top', whiteSpace: 'pre-wrap' }} colSpan={4}>{formData.popisPrace}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Vyhĺbené [m]:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.vyhlbene}</td>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Objavené [m]:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.objavene}</td>
+            </tr>
+             <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Zamerané [m]:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.zamerane}</td>
+            </tr>
+            <tr>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Podpis vedúceho akcie:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.podpisAkcie}</td>
+              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Podpis vedúceho klubu:</td>
+              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.podpisKlubu}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        {/* Gallery for PDF */}
+        {mediaFiles.filter(m => m.type === 'image').length > 0 && (
+          <div style={{ marginTop: '20px', pageBreakBefore: 'always' }}>
+            <h3 style={{ borderBottom: '1px solid #ccc', paddingBottom: '5px' }}>Fotogaléria</h3>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '10px' }}>
+              {mediaFiles.filter(m => m.type === 'image').map(media => (
+                <div key={media.id} style={{ width: '48%', marginBottom: '10px' }}>
+                   {media.preview && <img src={media.preview} alt="Príloha" style={{ width: '100%', height: 'auto', border: '1px solid #eee', borderRadius: '4px' }} />}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
     </div>
   );
 }
