@@ -1,8 +1,16 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import imageCompression from 'browser-image-compression';
-import { Camera, MapPin, CloudSun, Send, Trash2, Image as ImageIcon, Loader2, FileText } from 'lucide-react';
+import { Camera, MapPin, CloudSun, Send, Trash2, Image as ImageIcon, Loader2, FileText, LogOut, Download, Archive } from 'lucide-react';
 import html2pdf from 'html2pdf.js';
-import { db } from './db';
+import { db, type DiaryEntry } from './db';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { GoogleLogin, googleLogout } from '@react-oauth/google';
+import { jwtDecode } from 'jwt-decode';
+import { v4 as uuidv4 } from 'uuid';
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
+import { createRoot } from 'react-dom/client';
+import { PdfTemplate } from './PdfTemplate';
 
 const JASKYNIARSKE_SKUPINY = [
   "Jaskyniarska skupina Adama Vallu",
@@ -60,6 +68,13 @@ const JASKYNIARSKE_SKUPINY = [
   "Žilinský jaskyniarsky klub"
 ];
 
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  picture?: string;
+}
+
 interface MediaFile {
   id: string;
   file: File;
@@ -68,6 +83,14 @@ interface MediaFile {
 }
 
 function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [activeTab, setActiveTab] = useState<'novy' | 'moje'>('novy');
+  const [currentEntryId, setCurrentEntryId] = useState<string>(uuidv4());
+
+  const userDiaries = useLiveQuery(
+    () => user ? db.diaries.where('userId').equals(user.id).reverse().sortBy('createdAt') : []
+  , [user]);
+
   const [formData, setFormData] = useState({
     dennikCislo: '',
     skupina: '',
@@ -95,7 +118,105 @@ function App() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormData(prev => {
+      const newData = { ...prev, [name]: value };
+      if (name === 'skupina' && user) {
+        localStorage.setItem(`defaultSkupina_${user.id}`, value);
+      }
+      return newData;
+    });
+  };
+
+  // Restore user session and defaults
+  useEffect(() => {
+    const savedUser = localStorage.getItem('sssUser');
+    if (savedUser) {
+      const parsedUser = JSON.parse(savedUser);
+      setUser(parsedUser);
+      const defaultSkupina = localStorage.getItem(`defaultSkupina_${parsedUser.id}`);
+      if (defaultSkupina) {
+        setFormData(prev => ({ ...prev, skupina: defaultSkupina }));
+      }
+    }
+  }, []);
+
+  // Auto-save debounced
+  useEffect(() => {
+    if (!user) return;
+    const saveTimer = setTimeout(async () => {
+      try {
+        const multimediaToSave = mediaFiles.map((m: MediaFile & { arrayBuffer?: ArrayBuffer }) => ({
+          id: m.id,
+          name: m.file.name,
+          type: m.type,
+          data: m.arrayBuffer || new ArrayBuffer(0)
+        }));
+
+        await db.diaries.put({
+          ...formData,
+          id: currentEntryId,
+          userId: user.id,
+          multimedia: multimediaToSave,
+          createdAt: new Date().toISOString()
+        });
+      } catch (error) {
+        console.error("Auto-save failed", error);
+      }
+    }, 1000); // 1 second debounce
+
+    return () => clearTimeout(saveTimer);
+  }, [formData, mediaFiles, user, currentEntryId]);
+
+  const resetForm = () => {
+    setCurrentEntryId(uuidv4());
+    const defaultSkupina = user ? localStorage.getItem(`defaultSkupina_${user.id}`) || '' : '';
+    setFormData({
+      dennikCislo: '',
+      skupina: defaultSkupina,
+      datum: new Date().toISOString().split('T')[0],
+      pracovnaDoba: '',
+      pocasie: '',
+      lokalita: '',
+      poloha: '',
+      krasoveUzemie: '',
+      orografickyCelok: '',
+      veduciAkcie: '',
+      ostatniClenovia: '',
+      iniUcastnici: '',
+      popisPrace: '',
+      vyhlbene: '',
+      objavene: '',
+      zamerane: '',
+    });
+    setMediaFiles([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    window.scrollTo(0,0);
+  };
+
+  const handleLoginSuccess = (credentialResponse: unknown) => {
+    const credRes = credentialResponse as { credential?: string };
+    if (credRes.credential) {
+      const decoded = jwtDecode(credRes.credential) as { sub: string; name: string; email: string; picture?: string };
+      const newUser: User = {
+        id: decoded.sub,
+        name: decoded.name,
+        email: decoded.email,
+        picture: decoded.picture
+      };
+      setUser(newUser);
+      localStorage.setItem('sssUser', JSON.stringify(newUser));
+
+      const defaultSkupina = localStorage.getItem(`defaultSkupina_${newUser.id}`);
+      if (defaultSkupina) {
+        setFormData(prev => ({ ...prev, skupina: defaultSkupina }));
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    googleLogout();
+    setUser(null);
+    localStorage.removeItem('sssUser');
   };
 
   const handleGetLocationAndWeather = () => {
@@ -185,30 +306,36 @@ function App() {
             const webpFile = new File([compressedFile], file.name.replace(/\.[^/.]+$/, "") + ".webp", {
               type: 'image/webp'
             });
+            const arrayBuffer = await webpFile.arrayBuffer();
 
             processedFiles.push({
               id: Math.random().toString(36).substr(2, 9),
               file: webpFile,
               preview: URL.createObjectURL(webpFile),
-              type: 'image'
-            });
+              type: 'image/webp',
+              arrayBuffer // Store array buffer eagerly
+            } as MediaFile & { arrayBuffer: ArrayBuffer });
           } catch (error) {
             console.error('Error compressing image:', error);
+            const arrayBuffer = await file.arrayBuffer();
             // Fallback to original
              processedFiles.push({
               id: Math.random().toString(36).substr(2, 9),
               file: file,
               preview: URL.createObjectURL(file),
-              type: 'image'
-            });
+              type: file.type,
+              arrayBuffer
+            } as MediaFile & { arrayBuffer: ArrayBuffer });
           }
         } else if (file.type.startsWith('video/')) {
+          const arrayBuffer = await file.arrayBuffer();
           processedFiles.push({
             id: Math.random().toString(36).substr(2, 9),
             file: file,
-            preview: '', // Videos don't get simple previews here without more complex setup
-            type: 'video'
-          });
+            preview: '',
+            type: file.type,
+            arrayBuffer
+          } as MediaFile & { arrayBuffer: ArrayBuffer });
         }
       }
 
@@ -228,63 +355,226 @@ function App() {
     });
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      // Convert media files to ArrayBuffers for storage
-      const multimediaToSave = await Promise.all(
-        mediaFiles.map(async (m) => {
-          const arrayBuffer = await m.file.arrayBuffer();
-          return {
-            id: m.id,
-            name: m.file.name,
-            type: m.type,
-            data: arrayBuffer
-          };
-        })
-      );
-
-      await db.diaries.add({
-        ...formData,
-        multimedia: multimediaToSave,
-        createdAt: new Date().toISOString()
-      });
-
-      alert('Dáta boli úspešne uložené do lokálnej databázy. Môžete si stiahnuť PDF.');
-    } catch (error) {
-      console.error('Chyba pri ukladaní do DB:', error);
-      alert('Vyskytla sa chyba pri ukladaní do databázy.');
-    }
+    // Data is auto-saved. Just reset for a new one.
+    alert('Dáta sú uložené.');
+    resetForm();
+    setActiveTab('moje');
   };
 
+  const generatePDFBlob = async (diaryData: DiaryEntry): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const opt = {
+        margin:       10,
+        filename:     `dennik-${diaryData.dennikCislo.replace(/\//g, '_') || diaryData.id}.pdf`,
+        image:        { type: 'jpeg' as const, quality: 0.98 },
+        html2canvas:  { scale: 2, useCORS: true },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
+      };
 
-  const handleExportPDF = () => {
-    const element = document.getElementById('pdf-export-container');
-    if (!element) return;
+      // Create object URLs for saved ArrayBuffers
+      const mediaPreviews = (diaryData.multimedia || [])
+        .filter(m => m.type.startsWith('image/'))
+        .map(m => {
+          const blob = new Blob([m.data], { type: m.type });
+          return { id: m.id, preview: URL.createObjectURL(blob) };
+        });
 
-    // Temporarily show the element for rendering
-    element.style.display = 'block';
+      const tempDiv = document.createElement('div');
+      document.body.appendChild(tempDiv);
+      const root = createRoot(tempDiv);
 
-    const opt = {
-      margin:       10,
-      filename:     `dennik-${formData.dennikCislo.replace('/', '_') || 'novy'}.pdf`,
-      image:        { type: 'jpeg' as const, quality: 0.98 },
-      html2canvas:  { scale: 2, useCORS: true },
-      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
-    };
+      root.render(<PdfTemplate diary={diaryData} mediaPreviews={mediaPreviews} />);
 
-    html2pdf().set(opt).from(element).save().then(() => {
-       // Hide it again
-       element.style.display = 'none';
+      // Give React a tick to render
+      setTimeout(() => {
+        const element = tempDiv.firstChild as HTMLElement;
+        html2pdf().set(opt).from(element).output('blob').then((blob: Blob) => {
+           // Cleanup object URLs to avoid memory leaks
+           mediaPreviews.forEach(m => URL.revokeObjectURL(m.preview));
+           root.unmount();
+           tempDiv.remove();
+           resolve(blob);
+        }).catch((err: Error) => {
+           mediaPreviews.forEach(m => URL.revokeObjectURL(m.preview));
+           root.unmount();
+           tempDiv.remove();
+           reject(err);
+        });
+      }, 100);
     });
   };
 
+  const handleExportPDF = async () => {
+    try {
+      // Mock a DiaryEntry structure from current form data for the template
+      const currentDiaryData: DiaryEntry = {
+        id: currentEntryId,
+        userId: user?.id || '',
+        ...formData,
+        multimedia: [], // We pass the previews directly for the current form to avoid ArrayBuffer conversion here
+        createdAt: new Date().toISOString()
+      };
+
+      const mediaPreviews = mediaFiles
+        .filter(m => m.type === 'image')
+        .map(m => ({ id: m.id, preview: m.preview }));
+
+      const opt = {
+        margin:       10,
+        filename:     `dennik-${formData.dennikCislo.replace(/\//g, '_') || 'novy'}.pdf`,
+        image:        { type: 'jpeg' as const, quality: 0.98 },
+        html2canvas:  { scale: 2, useCORS: true },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
+      };
+
+      const tempDiv = document.createElement('div');
+      document.body.appendChild(tempDiv);
+      const root = createRoot(tempDiv);
+      root.render(<PdfTemplate diary={currentDiaryData} mediaPreviews={mediaPreviews} />);
+
+      setTimeout(() => {
+        const element = tempDiv.firstChild as HTMLElement;
+        html2pdf().set(opt).from(element).save().then(() => {
+          root.unmount();
+          tempDiv.remove();
+        });
+      }, 100);
+    } catch (e) {
+      console.error("Export failed", e);
+    }
+  };
+
+  const handleExportSinglePastPDF = async (diary: DiaryEntry) => {
+    const blob = await generatePDFBlob(diary);
+    saveAs(blob, `dennik-${diary.dennikCislo.replace(/\//g, '_') || diary.id}.pdf`);
+  };
+
+  const handleDownloadAllZip = async () => {
+    if (!userDiaries || userDiaries.length === 0) return;
+
+    const zip = new JSZip();
+    const folder = zip.folder("denniky");
+    if (!folder) return;
+
+    for (const diary of userDiaries) {
+       try {
+         const blob = await generatePDFBlob(diary);
+         folder.file(`dennik-${diary.dennikCislo.replace(/\//g, '_') || diary.id}.pdf`, blob);
+       } catch {
+         console.error("Failed to generate PDF for", diary.id);
+       }
+    }
+
+    zip.generateAsync({ type: "blob" }).then((content: Blob) => {
+      saveAs(content, "vsetky_denniky.zip");
+    });
+  };
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4 font-sans">
+        <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center space-y-6">
+           <div className="bg-blue-800 text-white p-4 rounded-lg -mt-4 mx-auto w-3/4 shadow-md">
+             <h1 className="text-xl font-bold">Technický denník SSS</h1>
+           </div>
+           <p className="text-gray-600">Pre vytvorenie a správu technických denníkov sa prosím prihláste.</p>
+           <div className="flex justify-center pt-4">
+             <GoogleLogin
+               onSuccess={handleLoginSuccess}
+               onError={() => console.log('Login Failed')}
+               useOneTap
+             />
+           </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gray-100 p-4 md:p-8 font-sans">
-      <div className="max-w-3xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
+    <div className="min-h-screen bg-gray-100 pb-12 font-sans">
+      {/* Top Navigation Bar */}
+      <nav className="bg-blue-800 text-white shadow-md">
+        <div className="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+             {user.picture && <img src={user.picture} alt="Profil" className="w-8 h-8 rounded-full" />}
+             <div>
+               <p className="text-sm font-bold leading-tight">{user.name}</p>
+               <p className="text-xs text-blue-200">{user.email}</p>
+             </div>
+          </div>
+          <button onClick={handleLogout} className="text-blue-200 hover:text-white transition-colors" title="Odhlásiť sa">
+            <LogOut className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="max-w-4xl mx-auto flex">
+          <button
+            onClick={() => setActiveTab('novy')}
+            className={`flex-1 py-3 text-center font-medium border-b-4 transition-colors ${activeTab === 'novy' ? 'border-white bg-blue-700' : 'border-transparent text-blue-200 hover:bg-blue-700/50'}`}
+          >
+            Nový denník
+          </button>
+          <button
+            onClick={() => setActiveTab('moje')}
+            className={`flex-1 py-3 text-center font-medium border-b-4 transition-colors ${activeTab === 'moje' ? 'border-white bg-blue-700' : 'border-transparent text-blue-200 hover:bg-blue-700/50'}`}
+          >
+            Moje denníky ({userDiaries?.length || 0})
+          </button>
+        </div>
+      </nav>
+
+      {activeTab === 'moje' ? (
+        <div className="max-w-4xl mx-auto p-4 md:p-8 space-y-6">
+           <div className="flex justify-between items-center mb-6">
+             <h2 className="text-2xl font-bold text-gray-800">Uložené denníky</h2>
+             {userDiaries && userDiaries.length > 0 && (
+               <button onClick={handleDownloadAllZip} className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium shadow-sm transition-colors">
+                 <Archive className="w-4 h-4" />
+                 Stiahnuť všetky (ZIP)
+               </button>
+             )}
+           </div>
+
+           {userDiaries?.length === 0 ? (
+             <div className="bg-white p-8 rounded-xl shadow-sm text-center border border-gray-200">
+               <p className="text-gray-500">Zatiaľ nemáte uložené žiadne denníky.</p>
+               <button onClick={() => setActiveTab('novy')} className="mt-4 text-blue-600 font-medium hover:underline">Vytvoriť prvý denník</button>
+             </div>
+           ) : (
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+               {userDiaries?.map((diary) => (
+                 <div key={diary.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
+                   <div className="flex justify-between items-start mb-3">
+                     <div>
+                       <h3 className="font-bold text-lg text-blue-900">{diary.dennikCislo || 'Bez čísla'}</h3>
+                       <p className="text-sm text-gray-600">{diary.lokalita || 'Neznáma lokalita'}</p>
+                     </div>
+                     <span className="text-xs font-medium bg-gray-100 px-2 py-1 rounded text-gray-600">{diary.datum}</span>
+                   </div>
+                   <p className="text-sm text-gray-500 mb-4 line-clamp-2">{diary.popisPrace || 'Bez popisu.'}</p>
+                   <div className="flex justify-between items-center border-t pt-3">
+                     <span className="text-xs text-gray-400">Prílohy: {diary.multimedia?.length || 0}</span>
+                     <button onClick={() => handleExportSinglePastPDF(diary)} className="flex items-center gap-1.5 text-red-600 hover:text-red-700 font-medium text-sm transition-colors">
+                       <Download className="w-4 h-4" />
+                       Stiahnuť PDF
+                     </button>
+                   </div>
+                 </div>
+               ))}
+             </div>
+           )}
+        </div>
+      ) : (
+      <div className="p-4 md:p-8">
+        <div className="max-w-3xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden relative">
+
+          <div className="absolute top-2 right-2 text-xs bg-green-100 text-green-800 px-2 py-1 rounded shadow-sm opacity-70">
+            Automatické ukladanie aktívne
+          </div>
 
         {/* Header */}
-        <div className="bg-blue-800 text-white p-6">
+        <div className="bg-blue-800 text-white p-6 pt-8">
           <h1 className="text-2xl font-bold text-center">Technický denník</h1>
           <p className="text-blue-200 text-center text-sm mt-1">Slovenská Speleologická Spoločnosť</p>
         </div>
@@ -470,98 +760,20 @@ function App() {
 
           {/* Akcie */}
           <div className="pt-6 pb-2 grid grid-cols-1 md:grid-cols-2 gap-4 border-t mt-4">
-            <button type="submit" className="w-full flex items-center justify-center gap-2 bg-blue-800 hover:bg-blue-900 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
-              <Send className="w-5 h-5" />
-              Uložiť do lokálnej DB
-            </button>
             <button type="button" onClick={handleExportPDF} className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
               <FileText className="w-5 h-5" />
-              Stiahnuť PDF
+              Aktuálny do PDF
+            </button>
+            <button type="submit" className="w-full flex items-center justify-center gap-2 bg-blue-800 hover:bg-blue-900 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
+              <Send className="w-5 h-5" />
+              Nový denník
             </button>
           </div>
 
         </form>
-      </div>
-
-      {/* Hidden PDF Template */}
-      <div id="pdf-export-container" style={{ display: 'none', padding: '20px', fontFamily: 'sans-serif', color: '#000', background: '#fff' }}>
-        <div style={{ textAlign: 'center', borderBottom: '2px solid #ccc', paddingBottom: '10px', marginBottom: '20px' }}>
-          <h1 style={{ fontSize: '24px', margin: '0 0 5px 0' }}>SLOVENSKÁ SPELEOLOGICKÁ SPOLOČNOSŤ</h1>
-          <h2 style={{ fontSize: '18px', margin: '0' }}>Technický denník č.: {formData.dennikCislo}</h2>
-          <p style={{ fontSize: '14px', margin: '5px 0 0 0', fontStyle: 'italic' }}>{formData.skupina}</p>
         </div>
-
-        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
-          <tbody>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold', width: '30%' }}>Lokalita:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.lokalita}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Poloha lokality (GPS):</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.poloha}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Krasové územie:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.krasoveUzemie}</td>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Orografický celok:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.orografickyCelok}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Dátum:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.datum}</td>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Pracovná doba:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.pracovnaDoba}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Počasie:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.pocasie}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Vedúci akcie:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.veduciAkcie}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Ostatní členovia SSS:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.ostatniClenovia}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Iní účastníci:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.iniUcastnici}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }} colSpan={4}>Popis práce (prípadný nákres):</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', height: '100px', verticalAlign: 'top', whiteSpace: 'pre-wrap' }} colSpan={4}>{formData.popisPrace}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Vyhĺbené [m]:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.vyhlbene}</td>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Objavené [m]:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.objavene}</td>
-            </tr>
-             <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Zamerané [m]:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.zamerane}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        {/* Gallery for PDF */}
-        {mediaFiles.filter(m => m.type === 'image').length > 0 && (
-          <div style={{ marginTop: '20px', pageBreakBefore: 'always' }}>
-            <h3 style={{ borderBottom: '1px solid #ccc', paddingBottom: '5px' }}>Fotogaléria</h3>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '10px' }}>
-              {mediaFiles.filter(m => m.type === 'image').map(media => (
-                <div key={media.id} style={{ width: '48%', marginBottom: '10px' }}>
-                   {media.preview && <img src={media.preview} alt="Príloha" style={{ width: '100%', height: 'auto', border: '1px solid #eee', borderRadius: '4px' }} />}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
+      )}
 
     </div>
   );

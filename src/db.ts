@@ -1,7 +1,8 @@
 import Dexie, { type EntityTable } from 'dexie';
 
 export interface DiaryEntry {
-  id?: number;
+  id: string; // Using string UUID to handle auto-saving predictably
+  userId: string; // Google User ID
   dennikCislo: string;
   datum: string;
   pracovnaDoba: string;
@@ -29,7 +30,7 @@ const db = new Dexie('SSSDennikDB') as Dexie & {
 
 // Schema declaration
 db.version(1).stores({
-  diaries: '++id, dennikCislo, datum, lokalita, skupina, createdAt'
+  diaries: 'id, userId, dennikCislo, datum, lokalita, skupina, createdAt'
 });
 
 export { db };
