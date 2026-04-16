@@ -1,8 +1,64 @@
 import React, { useState, useRef } from 'react';
 import imageCompression from 'browser-image-compression';
-import { Camera, MapPin, CloudSun, Send, Trash2, Image as ImageIcon, Loader2, FileJson, FileText } from 'lucide-react';
-// @ts-expect-error - html2pdf doesn't always have perfect types
+import { Camera, MapPin, CloudSun, Send, Trash2, Image as ImageIcon, Loader2, FileText } from 'lucide-react';
 import html2pdf from 'html2pdf.js';
+import { db } from './db';
+
+const JASKYNIARSKE_SKUPINY = [
+  "Jaskyniarska skupina Adama Vallu",
+  "Moldavský jaskyniarsky klub Adonis Ten",
+  "Jaskyniarska skupina Aragonit",
+  "Jaskyniarska skupina Arachnos – Slovenský kras",
+  "Speleoklub Badizer Ardovo",
+  "Speleoklub Banská Bystrica",
+  "Speleo Bratislava",
+  "Speleo Brezno",
+  "Speleoklub Cassovia",
+  "Oblastná skupina Čachtice",
+  "Speleologický klub Červené vrchy Slovakia",
+  "CUC Bratislava",
+  "Jaskyniarsky klub Demänovská Dolina",
+  "Speleo-Detva",
+  "Speleoklub Drienka Košice",
+  "Jaskyniarsky klub Dubnica nad Váhom",
+  "Speleoklub Ďumbier",
+  "MEANDER – Hájsky klub športovej speleológie",
+  "Jaskyniarsky klub Handlová",
+  "Speleoclub Chočské vrchy",
+  "Oblastná skupina Inovec",
+  "Oblastná skupina Jána Majku",
+  "Oblastná skupina Liptovská Teplička",
+  "Oblastná skupina Liptovský Mikuláš",
+  "Jaskyniarsky klub Liptovský Trnovec",
+  "Speleoklub Malá Fatra",
+  "Speleoklub Minotaurus",
+  "Speleoklub Muránska planina",
+  "Speleoklub Nicolaus",
+  "Speleoklub Nitra",
+  "Oblastná skupina Orava",
+  "Jaskyniari Plavecké Podhradie",
+  "Oblastná skupina Prešov",
+  "Oblastná speleologická skupina Rimavská Sobota",
+  "Speleoklub Rokoš",
+  "Speleo Rožňava",
+  "Oblastná skupina Ružomberok",
+  "Speleologický klub Slovenský raj",
+  "Sekcia speleopotápania",
+  "Speleodiver",
+  "Jaskyniarska skupina Spišská Belá",
+  "Jaskyniarsky klub Strážovské vrchy",
+  "Speleoklub Šariš",
+  "Speleoklub Tisovec",
+  "Trenčiansky speleoklub",
+  "Speleoklub Tribeč",
+  "Speleoklub Trnava",
+  "Jaskyniarsky klub Speleo Turiec",
+  "Oblastná skupina Uhrovec",
+  "Speleoklub Univerzity P. J. Šafárika, Košice",
+  "Jaskyniarsky klub Varín",
+  "Oblastná skupina Veľká Fatra",
+  "Žilinský jaskyniarsky klub"
+];
 
 interface MediaFile {
   id: string;
@@ -14,6 +70,7 @@ interface MediaFile {
 function App() {
   const [formData, setFormData] = useState({
     dennikCislo: '',
+    skupina: '',
     datum: new Date().toISOString().split('T')[0],
     pracovnaDoba: '',
     pocasie: '',
@@ -28,8 +85,6 @@ function App() {
     vyhlbene: '',
     objavene: '',
     zamerane: '',
-    podpisAkcie: '',
-    podpisKlubu: '',
   });
 
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
@@ -173,26 +228,35 @@ function App() {
     });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('Odosielam dáta:', formData);
-    console.log('Médiá:', mediaFiles);
-    alert('Dáta boli uložené (simulácia). Na stiahnutie použite tlačidlá nižšie.');
+    try {
+      // Convert media files to ArrayBuffers for storage
+      const multimediaToSave = await Promise.all(
+        mediaFiles.map(async (m) => {
+          const arrayBuffer = await m.file.arrayBuffer();
+          return {
+            id: m.id,
+            name: m.file.name,
+            type: m.type,
+            data: arrayBuffer
+          };
+        })
+      );
+
+      await db.diaries.add({
+        ...formData,
+        multimedia: multimediaToSave,
+        createdAt: new Date().toISOString()
+      });
+
+      alert('Dáta boli úspešne uložené do lokálnej databázy. Môžete si stiahnuť PDF.');
+    } catch (error) {
+      console.error('Chyba pri ukladaní do DB:', error);
+      alert('Vyskytla sa chyba pri ukladaní do databázy.');
+    }
   };
 
-  const handleExportJSON = () => {
-    const dataToExport = {
-      ...formData,
-      multimedia: mediaFiles.map(m => ({ id: m.id, name: m.file.name, type: m.type }))
-    };
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dataToExport, null, 2));
-    const downloadAnchorNode = document.createElement('a');
-    downloadAnchorNode.setAttribute("href",     dataStr);
-    downloadAnchorNode.setAttribute("download", `dennik-${formData.dennikCislo.replace('/', '_') || 'novy'}.json`);
-    document.body.appendChild(downloadAnchorNode);
-    downloadAnchorNode.click();
-    downloadAnchorNode.remove();
-  };
 
   const handleExportPDF = () => {
     const element = document.getElementById('pdf-export-container');
@@ -238,6 +302,13 @@ function App() {
               <div>
                 <label htmlFor="datum" className="block text-sm font-medium text-gray-700 mb-1">Dátum</label>
                 <input type="date" id="datum" name="datum" value={formData.datum} onChange={handleChange} className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border" />
+              </div>
+              <div>
+                <label htmlFor="skupina" className="block text-sm font-medium text-gray-700 mb-1">Jaskyniarska skupina</label>
+                <select id="skupina" name="skupina" value={formData.skupina} onChange={(e) => handleChange(e as unknown as React.ChangeEvent<HTMLInputElement>)} className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white">
+                  <option value="">-- Vyberte skupinu --</option>
+                  {JASKYNIARSKE_SKUPINY.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
               </div>
               <div>
                 <label htmlFor="pracovnaDoba" className="block text-sm font-medium text-gray-700 mb-1">Pracovná doba</label>
@@ -397,29 +468,11 @@ function App() {
             </div>
           </section>
 
-          {/* Podpisy */}
-          <section className="space-y-4 pt-4 border-t">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-               <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Dátum a podpis vedúceho akcie</label>
-                  <input type="text" name="podpisAkcie" value={formData.podpisAkcie} onChange={handleChange} className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border" />
-               </div>
-               <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Dátum a podpis vedúceho klubu</label>
-                  <input type="text" name="podpisKlubu" value={formData.podpisKlubu} onChange={handleChange} className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border" />
-               </div>
-            </div>
-          </section>
-
           {/* Akcie */}
-          <div className="pt-6 pb-2 grid grid-cols-1 md:grid-cols-3 gap-4 border-t mt-4">
+          <div className="pt-6 pb-2 grid grid-cols-1 md:grid-cols-2 gap-4 border-t mt-4">
             <button type="submit" className="w-full flex items-center justify-center gap-2 bg-blue-800 hover:bg-blue-900 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
               <Send className="w-5 h-5" />
-              Uložiť dáta
-            </button>
-            <button type="button" onClick={handleExportJSON} className="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
-              <FileJson className="w-5 h-5" />
-              Stiahnuť JSON
+              Uložiť do lokálnej DB
             </button>
             <button type="button" onClick={handleExportPDF} className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md md:col-span-1">
               <FileText className="w-5 h-5" />
@@ -435,6 +488,7 @@ function App() {
         <div style={{ textAlign: 'center', borderBottom: '2px solid #ccc', paddingBottom: '10px', marginBottom: '20px' }}>
           <h1 style={{ fontSize: '24px', margin: '0 0 5px 0' }}>SLOVENSKÁ SPELEOLOGICKÁ SPOLOČNOSŤ</h1>
           <h2 style={{ fontSize: '18px', margin: '0' }}>Technický denník č.: {formData.dennikCislo}</h2>
+          <p style={{ fontSize: '14px', margin: '5px 0 0 0', fontStyle: 'italic' }}>{formData.skupina}</p>
         </div>
 
         <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
@@ -490,12 +544,6 @@ function App() {
              <tr>
               <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Zamerané [m]:</td>
               <td style={{ border: '1px solid #000', padding: '8px' }} colSpan={3}>{formData.zamerane}</td>
-            </tr>
-            <tr>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Podpis vedúceho akcie:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.podpisAkcie}</td>
-              <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 'bold' }}>Podpis vedúceho klubu:</td>
-              <td style={{ border: '1px solid #000', padding: '8px' }}>{formData.podpisKlubu}</td>
             </tr>
           </tbody>
         </table>
